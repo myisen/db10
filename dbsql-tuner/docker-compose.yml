@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: dbsql-backend
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////app/dbsql_tuner.db
+      - DEBUG=true
+      - HOST=0.0.0.0
+      - PORT=8000
+      # Generate with:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - SECRET_KEY=${SECRET_KEY:-please-change-me-in-production}
+      # Point at mounted Oracle Instant Client dir inside container.
+      - ORACLE_CLIENT_LIB_DIR=/oracle/instantclient
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_data:/app
+      # Host path containing libclntsh.so.* etc (optional; skip if oracledb Thin suffices).
+      - ${ORACLE_CLIENT_HOST_DIR:-./oracle-instantclient}:/oracle/instantclient:ro
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    container_name: dbsql-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend_data:

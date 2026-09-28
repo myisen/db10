@@ -1,0 +1,25 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.log
+
+# Runtime / local data
+*.db
+*.sqlite
+*.sqlite3
+logs/
+dbsql_tuner.db
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
