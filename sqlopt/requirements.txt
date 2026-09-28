@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0.25
+alembic>=1.13
+pydantic>=2.5
+pydantic-settings>=2.1
+cryptography>=41.0
+# Oracle thin driver (zero Oracle Client required)
+oracledb>=2.0
+# OceanBase uses MySQL protocol
+pymysql>=1.1

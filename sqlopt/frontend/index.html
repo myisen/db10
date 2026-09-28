@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQLOpt — SQL 历史性能分析系统</title>
+  <link rel="stylesheet" href="https://unpkg.com/element-plus@2.7.6/dist/index.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@element-plus/icons-vue@2.3.1/dist/index.css" />
+  <style>
+    html, body, #app { height: 100%; margin: 0; padding: 0; }
+    .layout { display: flex; height: 100vh; }
+    .sidebar { width: 200px; background: #1f2937; color: #fff; padding: 16px 0; }
+    .sidebar h1 { font-size: 16px; margin: 0 0 20px 16px; color: #60a5fa; }
+    .el-menu { border-right: none; background: transparent; }
+    .main { flex: 1; padding: 20px; overflow: auto; background: #f3f4f6; }
+    .card { background: #fff; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    .sql-box { font-family: 'Courier New', monospace; background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 4px; white-space: pre-wrap; max-height: 200px; overflow: auto; font-size: 12px; }
+    .sql-box.literal { background: #064e3b; }
+    .fingerprint { font-size: 11px; color: #6b7280; font-family: monospace; }
+    .row-expander { font-size: 12px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="layout">
+    <aside class="sidebar">
+      <h1>🛠 SQLOpt</h1>
+      <el-menu
+        :default-active="activeMenu"
+        background-color="#1f2937"
+        text-color="#d1d5db"
+        active-text-color="#60a5fa"
+        @select="onMenuSelect"
+      >
+        <el-menu-item index="targets">🗄 实例管理</el-menu-item>
+        <el-menu-item index="collect">📥 采集</el-menu-item>
+        <el-menu-item index="history">🔍 历史 SQL 查询</el-menu-item>
+        <el-menu-item index="exec">▶ 在线执行</el-menu-item>
+        <el-menu-item index="policies">⚙ 执行策略</el-menu-item>
+        <el-menu-item index="exec-history">📋 执行历史</el-menu-item>
+      </el-menu>
+    </aside>
+
+    <main class="main">
+      <!-- ============ 实例管理 ============ -->
+      <div v-if="activeMenu === 'targets'">
+        <el-card class="card">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;">
+              <span>目标实例</span>
+              <el-button type="primary" @click="showAddTarget = true">+ 添加实例</el-button>
+            </div>
+          </template>
+          <el-table :data="targets" border stripe>
+            <el-table-column prop="name" label="名称" width="150" />
+            <el-table-column prop="db_type" label="类型" width="120">
+              <template #default="{row}">
+                <el-tag :type="row.db_type === 'oracle' ? 'primary' : 'success'">{{ row.db_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="conn_url" label="连接" />
+            <el-table-column prop="username" label="用户名" width="120" />
+            <el-table-column prop="last_collect" label="上次采集" width="180" />
+            <el-table-column label="操作" width="260">
+              <template #default="{row}">
+                <el-button size="small" @click="testTarget(row.id)">测试连接</el-button>
+                <el-button size="small" type="danger" @click="delTarget(row.id)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <!-- 新增实例弹窗 -->
+        <el-dialog v-model="showAddTarget" title="添加目标实例" width="480px">
+          <el-form :model="newTarget" label-width="90px">
+            <el-form-item label="名称"><el-input v-model="newTarget.name" placeholder="例如 ORA-DEV" /></el-form-item>
+            <el-form-item label="类型">
+              <el-select v-model="newTarget.db_type" style="width:100%">
+                <el-option label="Oracle" value="oracle" />
+                <el-option label="OceanBase" value="oceanbase" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="连接串"><el-input v-model="newTarget.conn_url" placeholder="Oracle: host:port/service ; OB: host:port" /></el-form-item>
+            <el-form-item label="用户名"><el-input v-model="newTarget.username" /></el-form-item>
+            <el-form-item label="密码"><el-input v-model="newTarget.password" type="password" show-password /></el-form-item>
+            <el-form-item label="额外配置 (JSON)">
+              <el-input v-model="newTarget.extra_conf_str" type="textarea" :rows="2" placeholder='Oracle: {"pdb_service":"PDB1"} ; OB: {"tenant_name":"obdemo"}' />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showAddTarget = false">取消</el-button>
+            <el-button type="primary" @click="addTarget">确定</el-button>
+          </template>
+        </el-dialog>
+      </div>
+
+      <!-- ============ 采集 ============ -->
+      <div v-if="activeMenu === 'collect'">
+        <el-card class="card">
+          <template #header><span>触发采集</span></template>
+          <el-form label-width="100px">
+            <el-form-item label="目标">
+              <el-select v-model="collect.target_id" style="width:240px">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name + ' (' + t.db_type + ')'" :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="回溯天数">
+              <el-input-number v-model="collect.since_days" :min="1" :max="365" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="doCollect" :loading="collect.loading">立即采集（全量）</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
+        <el-card class="card">
+          <template #header><span>手动拉取单条 SQL 最新执行</span></template>
+          <el-form label-width="100px">
+            <el-form-item label="目标">
+              <el-select v-model="collectOne.target_id" style="width:240px">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="SQL ID">
+              <el-input v-model="collectOne.sql_id" placeholder="Oracle sql_id / OB audit_sql_id" style="width:360px" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="doCollectOne" :loading="collectOne.loading">拉取</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </div>
+
+      <!-- ============ 历史 SQL 查询 ============ -->
+      <div v-if="activeMenu === 'history'">
+        <el-card class="card">
+          <template #header><span>筛选条件</span></template>
+          <el-form :inline="true">
+            <el-form-item label="目标">
+              <el-select v-model="history.target_id" clearable style="width:180px">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="类型">
+              <el-select v-model="history.stmt_type" clearable style="width:120px">
+                <el-option v-for="s in ['SELECT','INSERT','UPDATE','DELETE','DDL','PLSQL','UNKNOWN']" :key="s" :label="s" :value="s" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="关键字">
+              <el-input v-model="history.keyword" placeholder="搜 SQL 文本" style="width:240px" clearable />
+            </el-form-item>
+            <el-form-item label="只看有 literal">
+              <el-switch v-model="history.only_with_literal" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="queryHistory">查询</el-button>
+              <el-button @click="resetHistory">重置</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
+        <el-card class="card">
+          <template #header>
+            <span>共 {{ history.total }} 条 &nbsp; / &nbsp; 第 {{ history.page }} 页 / {{ Math.ceil(history.total/history.page_size) }} 页</span>
+            <div style="float:right">
+              <el-button size="small" :disabled="history.page<=1" @click="history.page--; queryHistory()">上一页</el-button>
+              <el-button size="small" :disabled="history.page>=Math.ceil(history.total/history.page_size)" @click="history.page++; queryHistory()">下一页</el-button>
+            </div>
+          </template>
+          <el-table :data="history.items" border stripe>
+            <el-table-column prop="stmt_type" label="类型" width="90">
+              <template #default="{row}">
+                <el-tag :type="tagColor(row.stmt_type)" size="small">{{ row.stmt_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="SQL 文本" min-width="400">
+              <template #default="{row}">
+                <div class="fingerprint">fp: {{ row.fingerprint }}</div>
+                <div class="sql-box" @click="expandSql(row)">{{ row.literal_available ? row.literal_sql : row.canonical_sql }}</div>
+                <div style="font-size:11px;color:#6b7280">
+                  {{ row.literal_available ? '✅ 有 literal' : '⚠ 仅 canonical（无绑定值）' }}
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="total_executions" label="总执行次数" width="110" sortable="custom" />
+            <el-table-column prop="avg_elapsed_ms" label="平均耗时(ms)" width="130" sortable="custom">
+              <template #default="{row}">{{ row.avg_elapsed_ms.toFixed(1) }}</template>
+            </el-table-column>
+            <el-table-column prop="last_exec_time" label="最近执行" width="170" />
+          </el-table>
+        </el-card>
+
+        <!-- SQL 详情弹窗 -->
+        <el-dialog v-model="showSqlDetail" title="SQL 详情" width="80%" top="5vh">
+          <div v-if="sqlDetail">
+            <div class="fingerprint">指纹：{{ sqlDetail.fingerprint }}</div>
+            <p><b>类型：</b>{{ sqlDetail.stmt_type }} <b>Schema：</b>{{ sqlDetail.schema_name || '-' }}</p>
+            <p><b>Canonical（? 占位）：</b></p>
+            <div class="sql-box">{{ sqlDetail.canonical_sql }}</div>
+            <p v-if="sqlDetail.literal_available"><b>Literal（替换后）：</b></p>
+            <div v-if="sqlDetail.literal_available" class="sql-box literal">{{ sqlDetail.literal_sql }}</div>
+            <p><b>历史快照（最近 {{ sqlDetail.snapshots.length }} 条）：</b></p>
+            <el-table :data="sqlDetail.snapshots" border size="small">
+              <el-table-column prop="snap_time" label="时间" width="170" />
+              <el-table-column prop="target_id" label="目标" width="80" />
+              <el-table-column prop="executions" label="执行次数" width="100" />
+              <el-table-column prop="avg_elapsed_ms" label="平均ms" width="90">
+                <template #default="{row}">{{ row.avg_elapsed_ms?.toFixed(1) }}</template>
+              </el-table-column>
+              <el-table-column prop="cpu_ms" label="CPU ms" width="90" />
+              <el-table-column prop="plan_hash" label="Plan Hash" width="100" />
+            </el-table>
+          </div>
+        </el-dialog>
+      </div>
+
+      <!-- ============ 在线执行 ============ -->
+      <div v-if="activeMenu === 'exec'">
+        <el-card class="card">
+          <template #header><span>在线执行 SQL</span></template>
+          <el-form label-width="100px">
+            <el-form-item label="目标">
+              <el-select v-model="exec.target_id" style="width:240px">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="SQL">
+              <el-input v-model="exec.sql_text" type="textarea" :rows="8" placeholder="只允许 SELECT；写 SQL 会自动回滚" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="doExec" :loading="exec.loading">执行</el-button>
+              <el-button @click="exec.sql_text = ''">清空</el-button>
+              <span v-if="exec.result" style="margin-left:12px">
+                <el-tag v-if="exec.result.status === 'success'" type="success">执行成功</el-tag>
+                <el-tag v-else-if="exec.result.status === 'failed'" type="danger">执行失败</el-tag>
+                <el-tag v-else-if="exec.result.status === 'blocked'" type="warning">被策略拦截</el-tag>
+                <el-tag v-else-if="exec.result.status === 'rollback'" type="info">已自动回滚</el-tag>
+                &nbsp; 耗时 {{ exec.result.elapsed_ms }} ms · 指纹 {{ exec.result.fingerprint }}
+              </span>
+            </el-form-item>
+            <el-alert v-if="exec.result && exec.result.status === 'blocked'"
+                      :title="exec.result.reason" type="warning" show-icon />
+            <el-alert v-if="exec.result && exec.result.exec_status_hint"
+                      :title="exec.result.exec_status_hint" type="info" show-icon />
+            <el-alert v-if="exec.result && exec.result.error"
+                      :title="exec.result.error" type="error" show-icon />
+          </el-form>
+          <div v-if="exec.result && exec.result.rows.length">
+            <p><b>结果（{{ exec.result.total_rows }} 行，最多显示 1000 行）：</b></p>
+            <el-table :data="exec.result.rows" border stripe height="400">
+              <el-table-column v-for="(v, k) in exec.result.rows[0]" :key="k" :prop="k" :label="k" />
+            </el-table>
+          </div>
+        </el-card>
+      </div>
+
+      <!-- ============ 执行策略 ============ -->
+      <div v-if="activeMenu === 'policies'">
+        <el-card class="card">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;">
+              <span>执行策略（高优到低优：目标级 → 全局）</span>
+              <el-button type="primary" @click="showAddPolicy = true">+ 新增策略</el-button>
+            </div>
+          </template>
+          <el-table :data="policies" border stripe>
+            <el-table-column prop="name" label="名称" width="200" />
+            <el-table-column prop="target_id" label="目标" width="100">
+              <template #default="{row}">{{ row.target_id ? '#'+row.target_id : '全局' }}</template>
+            </el-table-column>
+            <el-table-column prop="stmt_type" label="SQL 类型" width="110" />
+            <el-table-column prop="pattern_regex" label="正则（可选）" />
+            <el-table-column prop="allow_exec" label="允许执行" width="110">
+              <template #default="{row}">
+                <el-tag :type="row.allow_exec ? 'success' : 'danger'">{{ row.allow_exec ? '是' : '否' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="创建" width="170" />
+            <el-table-column label="操作" width="120">
+              <template #default="{row}">
+                <el-button size="small" type="danger" @click="delPolicy(row.id)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-dialog v-model="showAddPolicy" title="新增策略" width="450px">
+          <el-form :model="newPolicy" label-width="100px">
+            <el-form-item label="名称"><el-input v-model="newPolicy.name" /></el-form-item>
+            <el-form-item label="目标">
+              <el-select v-model="newPolicy.target_id" clearable style="width:100%">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+              <div style="font-size:12px;color:#6b7280">不选则为全局策略</div>
+            </el-form-item>
+            <el-form-item label="SQL 类型">
+              <el-select v-model="newPolicy.stmt_type" style="width:100%">
+                <el-option v-for="s in ['SELECT','INSERT','UPDATE','DELETE','DDL','PLSQL']" :key="s" :label="s" :value="s" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="正则（可选）"><el-input v-model="newPolicy.pattern_regex" placeholder="例如 ^SELECT \* FROM user_%" /></el-form-item>
+            <el-form-item label="允许执行"><el-switch v-model="newPolicy.allow_exec" /></el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showAddPolicy = false">取消</el-button>
+            <el-button type="primary" @click="addPolicy">确定</el-button>
+          </template>
+        </el-dialog>
+      </div>
+
+      <!-- ============ 执行历史 ============ -->
+      <div v-if="activeMenu === 'exec-history'">
+        <el-card class="card">
+          <template #header><span>最近执行（最多 100 条）</span></template>
+          <el-table :data="execHistory" border stripe>
+            <el-table-column prop="target_id" label="目标" width="90" />
+            <el-table-column prop="stmt_type" label="类型" width="100">
+              <template #default="{row}">
+                <el-tag :type="tagColor(row.stmt_type)" size="small">{{ row.stmt_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="SQL" min-width="300">
+              <template #default="{row}">
+                <div class="sql-box">{{ row.sql_text }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="exec_status" label="状态" width="100">
+              <template #default="{row}">
+                <el-tag :type="row.exec_status === 'success' ? 'success' : row.exec_status === 'blocked' ? 'warning' : row.exec_status === 'rollback' ? 'info' : 'danger'">
+                  {{ row.exec_status }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="elapsed_ms" label="耗时 ms" width="100" />
+            <el-table-column prop="exec_at" label="时间" width="170" />
+          </el-table>
+        </el-card>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://unpkg.com/vue@3.4.27/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus@2.7.6/dist/index.full.min.js"></script>
+<script>
+const { createApp, reactive, ref, onMounted } = Vue;
+
+const API = (path, opt = {}) => fetch('/api' + path, {
+  headers: {'Content-Type': 'application/json'},
+  ...opt,
+  body: opt.body ? JSON.stringify(opt.body) : undefined,
+}).then(r => {
+  if (r.status >= 400) return r.text().then(t => { throw new Error(t); });
+  return r.json();
+});
+
+const app = createApp({
+  setup() {
+    const activeMenu = ref('targets');
+    const targets = ref([]);
+    const showAddTarget = ref(false);
+    const newTarget = reactive({name:'', db_type:'oracle', conn_url:'', username:'', password:'', extra_conf_str:''});
+
+    const collect = reactive({target_id:null, since_days:30, loading:false});
+    const collectOne = reactive({target_id:null, sql_id:'', loading:false});
+
+    const history = reactive({target_id:null, stmt_type:null, keyword:'', only_with_literal:false, page:1, page_size:20, items:[], total:0});
+    const showSqlDetail = ref(false);
+    const sqlDetail = ref(null);
+
+    const exec = reactive({target_id:null, sql_text:'', result:null, loading:false});
+
+    const policies = ref([]);
+    const showAddPolicy = ref(false);
+    const newPolicy = reactive({name:'', target_id:null, stmt_type:'SELECT', pattern_regex:'', allow_exec:true});
+
+    const execHistory = ref([]);
+
+    // --- targets ---
+    async function loadTargets() { targets.value = await API('/targets'); }
+    async function addTarget() {
+      let extra = {};
+      if (newTarget.extra_conf_str) {
+        try { extra = JSON.parse(newTarget.extra_conf_str); } catch(e) { ElementPlus.ElMessage.error('extra_conf JSON 格式错误'); return; }
+      }
+      await API('/targets', { method:'POST', body: {...newTarget, extra_conf: extra} });
+      ElementPlus.ElMessage.success('已添加');
+      showAddTarget.value = false;
+      newTarget.name = newTarget.conn_url = newTarget.username = newTarget.password = newTarget.extra_conf_str = '';
+      await loadTargets();
+    }
+    async function delTarget(id) {
+      await API('/targets/'+id, { method:'DELETE' });
+      await loadTargets();
+    }
+    async function testTarget(id) {
+      const r = await API('/targets/'+id+'/test', { method:'POST' });
+      ElementPlus.ElMessage({ message: r.message, type: r.ok ? 'success' : 'error' });
+    }
+
+    // --- collect ---
+    async function doCollect() {
+      collect.loading = true;
+      try {
+        const r = await API('/collect', { method:'POST', body:{target_id:collect.target_id, since_days:collect.since_days} });
+        ElementPlus.ElMessage.success('采集完成：' + JSON.stringify(r));
+      } finally { collect.loading = false; }
+    }
+    async function doCollectOne() {
+      collectOne.loading = true;
+      try {
+        const r = await API('/collect_one', { method:'POST', body:{target_id:collectOne.target_id, sql_id:collectOne.sql_id} });
+        ElementPlus.ElMessage.success('拉取结果：' + JSON.stringify(r));
+      } finally { collectOne.loading = false; }
+    }
+
+    // --- history ---
+    async function queryHistory() {
+      const body = {...history}; delete body.items; delete body.total;
+      const r = await API('/sql/history', { method:'POST', body });
+      Object.assign(history, r);
+    }
+    function resetHistory() {
+      history.target_id = null; history.stmt_type = null; history.keyword = '';
+      history.only_with_literal = false; history.page = 1;
+      queryHistory();
+    }
+    async function expandSql(row) {
+      sqlDetail.value = await API('/sql/' + row.fingerprint + (history.target_id ? '?target_id='+history.target_id : ''));
+      showSqlDetail.value = true;
+    }
+
+    // --- exec ---
+    async function doExec() {
+      exec.loading = true;
+      exec.result = null;
+      try {
+        exec.result = await API('/exec', { method:'POST', body:{target_id:exec.target_id, sql_text:exec.sql_text} });
+        await loadExecHistory();
+      } finally { exec.loading = false; }
+    }
+
+    // --- policies ---
+    async function loadPolicies() { policies.value = await API('/policies'); }
+    async function addPolicy() {
+      await API('/policies', { method:'POST', body:{...newPolicy} });
+      showAddPolicy.value = false;
+      newPolicy.name = newPolicy.pattern_regex = '';
+      await loadPolicies();
+    }
+    async function delPolicy(id) {
+      await API('/policies/'+id, { method:'DELETE' });
+      await loadPolicies();
+    }
+
+    // --- exec history ---
+    async function loadExecHistory() { execHistory.value = await API('/exec/history?limit=100'); }
+
+    function tagColor(type) {
+      return ({SELECT:'', INSERT:'success', UPDATE:'warning', DELETE:'danger', DDL:'info', PLSQL:'', UNKNOWN:'info'})[type] || '';
+    }
+
+    function onMenuSelect(idx) {
+      activeMenu.value = idx;
+      if (idx === 'targets') loadTargets();
+      if (idx === 'history') queryHistory();
+      if (idx === 'policies') loadPolicies();
+      if (idx === 'exec-history') loadExecHistory();
+    }
+
+    onMounted(async () => { await loadTargets(); await loadPolicies(); await loadExecHistory(); });
+
+    return {
+      activeMenu, targets, newTarget, showAddTarget, addTarget, delTarget, testTarget,
+      collect, collectOne, doCollect, doCollectOne,
+      history, showSqlDetail, sqlDetail, queryHistory, resetHistory, expandSql,
+      exec, doExec,
+      policies, newPolicy, showAddPolicy, addPolicy, delPolicy,
+      execHistory,
+      tagColor, onMenuSelect,
+    };
+  },
+});
+app.use(ElementPlus);
+app.mount('#app');
+</script>
+</body>
+</html>
