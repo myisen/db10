@@ -13,6 +13,7 @@ from ..database import get_db
 from ..models.models import (
     SqlExecHistory,
     SqlFingerprint,
+    SqlJob,
     SqlPolicy,
     SqlStatSnapshot,
     SqlTarget,
@@ -20,9 +21,12 @@ from ..models.models import (
 from ..schemas import (
     CollectIn,
     CollectOneIn,
+    DashboardOut,
     ExecHistoryOut,
     ExecIn,
     ExecOut,
+    JobIn,
+    JobOut,
     PolicyIn,
     PolicyOut,
     SqlDetailOut,
@@ -35,7 +39,9 @@ from ..schemas import (
 )
 from ..services.collector import CollectorService
 from ..services.crypto import encrypt
+from ..services.dashboard import dashboard_summary
 from ..services.executor import ExecutorService
+from ..services.scheduler import register_job, remove_job, run_job_now
 
 
 router = APIRouter()
@@ -281,3 +287,117 @@ def delete_policy(policy_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------------------------
+@router.get("/dashboard", response_model=DashboardOut)
+def dashboard(target_id: Optional[int] = Query(None),
+              since_hours: int = Query(24), db: Session = Depends(get_db)):
+    return dashboard_summary(db, target_id, since_hours)
+
+
+# ---------------------------------------------------------------------------
+# 调度 Job
+# ---------------------------------------------------------------------------
+@router.get("/jobs", response_model=list[JobOut])
+def list_jobs(target_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    q = db.query(SqlJob).order_by(SqlJob.id)
+    if target_id is not None:
+        q = q.filter(SqlJob.target_id == target_id)
+    return q.all()
+
+
+@router.post("/jobs", response_model=JobOut)
+def create_job(inp: JobIn, db: Session = Depends(get_db)):
+    # 验证 target
+    t = db.get(SqlTarget, inp.target_id)
+    if not t:
+        raise HTTPException(400, "target_id not found")
+    if inp.trigger_type == "interval":
+        if not (inp.interval_hours or inp.interval_minutes or inp.interval_seconds):
+            raise HTTPException(400, "interval 至少填一个 (hours/minutes/seconds)")
+    elif inp.trigger_type == "cron":
+        if not inp.cron_expr:
+            raise HTTPException(400, "cron 需填写 cron_expr")
+    else:
+        raise HTTPException(400, f"trigger_type 只支持 interval/cron，实际 {inp.trigger_type}")
+
+    existing = db.query(SqlJob).filter(SqlJob.name == inp.name).first()
+    if existing:
+        raise HTTPException(400, "name 已存在")
+
+    job = SqlJob(
+        name=inp.name, target_id=inp.target_id, since_days=inp.since_days,
+        trigger_type=inp.trigger_type,
+        interval_hours=inp.interval_hours,
+        interval_minutes=inp.interval_minutes,
+        interval_seconds=inp.interval_seconds,
+        cron_expr=inp.cron_expr,
+        enabled=inp.enabled,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    if job.enabled:
+        register_job(job)
+        # register_job 内部会另开 Session 回写 next_run_at，需要 refresh 回来
+        db.refresh(job)
+    return job
+
+
+@router.put("/jobs/{job_id}", response_model=JobOut)
+def update_job(job_id: int, inp: JobIn, db: Session = Depends(get_db)):
+    job = db.get(SqlJob, job_id)
+    if not job:
+        raise HTTPException(404)
+    job.name = inp.name
+    job.target_id = inp.target_id
+    job.since_days = inp.since_days
+    job.trigger_type = inp.trigger_type
+    job.interval_hours = inp.interval_hours
+    job.interval_minutes = inp.interval_minutes
+    job.interval_seconds = inp.interval_seconds
+    job.cron_expr = inp.cron_expr
+    job.enabled = inp.enabled
+    db.commit()
+    db.refresh(job)
+    if job.enabled:
+        register_job(job)
+        db.refresh(job)
+    else:
+        remove_job(job.id)
+    return job
+
+
+@router.patch("/jobs/{job_id}/toggle", response_model=JobOut)
+def toggle_job(job_id: int, enabled: bool, db: Session = Depends(get_db)):
+    job = db.get(SqlJob, job_id)
+    if not job:
+        raise HTTPException(404)
+    job.enabled = enabled
+    db.commit()
+    db.refresh(job)
+    if enabled:
+        register_job(job)
+        db.refresh(job)
+    else:
+        remove_job(job.id)
+    return job
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.get(SqlJob, job_id)
+    if not job:
+        raise HTTPException(404)
+    remove_job(job.id)
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/jobs/{job_id}/run")
+def run_job(job_id: int):
+    return run_job_now(job_id)

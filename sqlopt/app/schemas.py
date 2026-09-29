@@ -139,3 +139,35 @@ class ExecHistoryOut(BaseModel):
     exec_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- 调度 Job ---
+class JobIn(BaseModel):
+    name: str
+    target_id: int
+    since_days: int = 30
+    trigger_type: str = "interval"           # interval / cron
+    interval_hours: int | None = None
+    interval_minutes: int | None = None
+    interval_seconds: int | None = None
+    cron_expr: str | None = None             # 5 字段 "0 2 * * *"
+    enabled: bool = True
+
+
+class JobOut(JobIn):
+    id: int
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_message: str | None = None
+    next_run_at: datetime | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Dashboard ---
+class DashboardOut(BaseModel):
+    target_health: list[dict[str, Any]]
+    top_slow_sql: list[dict[str, Any]]
+    stmt_type_distribution: list[dict[str, Any]]
+    since_hours: int

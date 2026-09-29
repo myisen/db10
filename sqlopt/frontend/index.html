@@ -32,10 +32,12 @@
         active-text-color="#60a5fa"
         @select="onMenuSelect"
       >
+        <el-menu-item index="dashboard">📊 仪表盘</el-menu-item>
         <el-menu-item index="targets">🗄 实例管理</el-menu-item>
         <el-menu-item index="collect">📥 采集</el-menu-item>
         <el-menu-item index="history">🔍 历史 SQL 查询</el-menu-item>
         <el-menu-item index="exec">▶ 在线执行</el-menu-item>
+        <el-menu-item index="jobs">⏱ 定时采集</el-menu-item>
         <el-menu-item index="policies">⚙ 执行策略</el-menu-item>
         <el-menu-item index="exec-history">📋 执行历史</el-menu-item>
       </el-menu>
@@ -336,6 +338,158 @@
           </el-table>
         </el-card>
       </div>
+
+      <!-- ============ Dashboard ============ -->
+      <div v-if="activeMenu === 'dashboard'">
+        <el-card class="card">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span>仪表盘</span>
+              <div>
+                <el-select v-model="dashboard.since_hours" style="width:120px;margin-right:8px">
+                  <el-option :label="'最近 24h'" :value="24" />
+                  <el-option :label="'最近 7 天'" :value="168" />
+                  <el-option :label="'最近 30 天'" :value="720" />
+                </el-select>
+                <el-button type="primary" @click="loadDashboard">刷新</el-button>
+              </div>
+            </div>
+          </template>
+
+          <h3>🩺 采集健康度</h3>
+          <el-table :data="dashboard.target_health" border>
+            <el-table-column prop="name" label="实例" width="140" />
+            <el-table-column prop="db_type" label="类型" width="120">
+              <template #default="{row}">
+                <el-tag :type="row.db_type === 'oracle' ? 'primary' : 'success'">{{ row.db_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="status" label="健康度" width="100">
+              <template #default="{row}">
+                <el-tag :type="row.status==='ok'?'success':row.status==='warn'?'warning':'danger'">
+                  {{ {ok:'✅ 正常',warn:'⚠ 滞后',stale:'❌ 过期',never:'— 未采集'}[row.status] }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="last_collect" label="上次采集" width="170" />
+            <el-table-column prop="latest_job_run" label="调度最近运行" width="170" />
+            <el-table-column prop="latest_job_status" label="调度状态" width="100" />
+            <el-table-column prop="job_count" label="任务数" width="80" />
+          </el-table>
+
+          <h3 style="margin-top:24px;">🐌 Top 10 慢 SQL</h3>
+          <el-table :data="dashboard.top_slow_sql" border stripe>
+            <el-table-column prop="fingerprint" label="指纹" width="200" />
+            <el-table-column prop="total_exec" label="执行次数" width="100" sortable />
+            <el-table-column prop="avg_ms" label="平均耗时(ms)" width="130" sortable>
+              <template #default="{row}">{{ row.avg_ms.toFixed(1) }}</template>
+            </el-table-column>
+            <el-table-column prop="max_elapsed_ms" label="最大耗时(ms)" width="130" sortable>
+              <template #default="{row}">{{ row.max_elapsed_ms.toFixed(1) }}</template>
+            </el-table-column>
+            <el-table-column prop="last_seen" label="最近出现" width="170" />
+          </el-table>
+
+          <h3 style="margin-top:24px;">📊 SQL 类型分布</h3>
+          <el-table :data="dashboard.stmt_type_distribution" border>
+            <el-table-column prop="stmt_type" label="SQL 类型" width="120">
+              <template #default="{row}">
+                <el-tag :type="tagColor(row.stmt_type)">{{ row.stmt_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="fingerprint_cnt" label="指纹数" width="120" />
+            <el-table-column prop="execution_cnt" label="累计执行次数" width="140" />
+          </el-table>
+        </el-card>
+      </div>
+
+      <!-- ============ 调度任务 ============ -->
+      <div v-if="activeMenu === 'jobs'">
+        <el-card class="card">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;">
+              <span>调度采集任务</span>
+              <el-button type="primary" @click="showAddJob = true">+ 新增调度任务</el-button>
+            </div>
+          </template>
+          <el-alert
+            type="info" show-icon :closable="false"
+            title="调度在 FastAPI 进程内（APScheduler），进程重启后任务从 DB 自动加载"
+            style="margin-bottom:12px"
+          />
+          <el-table :data="jobs" border stripe>
+            <el-table-column prop="name" label="任务名" width="180" />
+            <el-table-column label="目标" width="120">
+              <template #default="{row}">{{ (targets.find(t=>t.id===row.target_id)||{}).name || '#'+row.target_id }}</template>
+            </el-table-column>
+            <el-table-column prop="trigger_type" label="方式" width="100">
+              <template #default="{row}">
+                <el-tag :type="row.trigger_type==='cron' ? 'primary' : ''">{{ row.trigger_type }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="表达式 / 间隔" width="160">
+              <template #default="{row}">
+                {{ row.trigger_type==='cron' ? row.cron_expr :
+                  `${row.interval_hours||0}h ${row.interval_minutes||0}m ${row.interval_seconds||0}s` }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="since_days" label="回溯天数" width="90" />
+            <el-table-column prop="enabled" label="启用" width="100">
+              <template #default="{row}">
+                <el-switch :model-value="row.enabled" @change="toggleJob(row.id, $event)" />
+              </template>
+            </el-table-column>
+            <el-table-column prop="next_run_at" label="下次运行" width="170" />
+            <el-table-column prop="last_run_at" label="上次运行" width="170" />
+            <el-table-column prop="last_run_status" label="状态" width="100">
+              <template #default="{row}">
+                <el-tag v-if="row.last_run_status==='success'" type="success">成功</el-tag>
+                <el-tag v-else-if="row.last_run_status==='failed'" type="danger">失败</el-tag>
+                <span v-else>—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="160" fixed="right">
+              <template #default="{row}">
+                <el-button size="small" @click="runJobNow(row.id)">立即执行</el-button>
+                <el-button size="small" type="danger" @click="delJob(row.id)">删</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-dialog v-model="showAddJob" title="新增调度任务" width="520px">
+          <el-form :model="newJob" label-width="100px">
+            <el-form-item label="任务名"><el-input v-model="newJob.name" /></el-form-item>
+            <el-form-item label="目标">
+              <el-select v-model="newJob.target_id" style="width:100%">
+                <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="回溯天数"><el-input-number v-model="newJob.since_days" :min="1" :max="365" /></el-form-item>
+            <el-form-item label="调度方式">
+              <el-select v-model="newJob.trigger_type" style="width:100%">
+                <el-option label="interval (固定间隔)" value="interval" />
+                <el-option label="cron (表达式)" value="cron" />
+              </el-select>
+            </el-form-item>
+            <template v-if="newJob.trigger_type === 'interval'">
+              <el-form-item label="小时"><el-input-number v-model="newJob.interval_hours" :min="0" /></el-form-item>
+              <el-form-item label="分钟"><el-input-number v-model="newJob.interval_minutes" :min="0" /></el-form-item>
+              <el-form-item label="秒"><el-input-number v-model="newJob.interval_seconds" :min="0" /></el-form-item>
+            </template>
+            <template v-else>
+              <el-form-item label="Cron 表达式">
+                <el-input v-model="newJob.cron_expr" placeholder="0 2 * * * （每天凌晨2点，5字段）" />
+              </el-form-item>
+            </template>
+            <el-form-item label="启用"><el-switch v-model="newJob.enabled" /></el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showAddJob = false">取消</el-button>
+            <el-button type="primary" @click="addJob">确定</el-button>
+          </template>
+        </el-dialog>
+      </div>
     </main>
   </div>
 </div>
@@ -375,6 +529,46 @@ const app = createApp({
     const newPolicy = reactive({name:'', target_id:null, stmt_type:'SELECT', pattern_regex:'', allow_exec:true});
 
     const execHistory = ref([]);
+
+    // --- dashboard ---
+    const dashboard = reactive({target_health:[], top_slow_sql:[], stmt_type_distribution:[], since_hours:24});
+    async function loadDashboard() {
+      const r = await API('/dashboard?since_hours=' + dashboard.since_hours);
+      dashboard.target_health = r.target_health;
+      dashboard.top_slow_sql = r.top_slow_sql;
+      dashboard.stmt_type_distribution = r.stmt_type_distribution;
+    }
+
+    // --- jobs ---
+    const jobs = ref([]);
+    const showAddJob = ref(false);
+    const newJob = reactive({
+      name:'', target_id:null, since_days:30,
+      trigger_type:'interval',
+      interval_hours:24, interval_minutes:null, interval_seconds:null,
+      cron_expr:null, enabled:true,
+    });
+    async function loadJobs() { jobs.value = await API('/jobs'); }
+    async function addJob() {
+      await API('/jobs', { method:'POST', body:{...newJob} });
+      ElementPlus.ElMessage.success('已添加');
+      showAddJob.value = false;
+      Object.assign(newJob, {name:'', target_id:null, since_days:30, trigger_type:'interval', interval_hours:24, interval_minutes:null, interval_seconds:null, cron_expr:null, enabled:true});
+      await loadJobs();
+    }
+    async function toggleJob(id, enabled) {
+      await API('/jobs/'+id+'/toggle?enabled='+enabled, { method:'PATCH' });
+      await loadJobs();
+    }
+    async function runJobNow(id) {
+      ElementPlus.ElMessage({ message:'已触发执行', type:'success' });
+      await API('/jobs/'+id+'/run', { method:'POST' });
+      await loadJobs();
+    }
+    async function delJob(id) {
+      await API('/jobs/'+id, { method:'DELETE' });
+      await loadJobs();
+    }
 
     // --- targets ---
     async function loadTargets() { targets.value = await API('/targets'); }
@@ -466,9 +660,11 @@ const app = createApp({
       if (idx === 'history') queryHistory();
       if (idx === 'policies') loadPolicies();
       if (idx === 'exec-history') loadExecHistory();
+      if (idx === 'dashboard') loadDashboard();
+      if (idx === 'jobs') loadJobs();
     }
 
-    onMounted(async () => { await loadTargets(); await loadPolicies(); await loadExecHistory(); });
+    onMounted(async () => { await loadTargets(); await loadPolicies(); await loadExecHistory(); await loadDashboard(); await loadJobs(); });
 
     return {
       activeMenu, targets, newTarget, showAddTarget, addTarget, delTarget, testTarget,
@@ -477,6 +673,8 @@ const app = createApp({
       exec, doExec,
       policies, newPolicy, showAddPolicy, addPolicy, delPolicy,
       execHistory,
+      dashboard, loadDashboard,
+      jobs, newJob, showAddJob, addJob, loadJobs, toggleJob, runJobNow, delJob,
       tagColor, onMenuSelect,
     };
   },
