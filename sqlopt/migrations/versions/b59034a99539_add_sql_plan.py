@@ -9,15 +9,16 @@ Note: 原始 autogenerate 把 initial 已建表重复了一遍，这里只留新
 from alembic import op
 import sqlalchemy as sa
 
-
 # revision identifiers, used by Alembic.
 revision = 'b59034a99539'
 down_revision = 'fccff9c21513'
 branch_labels = None
 depends_on = None
 
-
 def upgrade() -> None:
+    # ===== AUTOGENERATE BUG: 以下重复 ===== 
+# ===== 重复块结束 ===== 
+
     op.create_table(
         'sql_plan',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -35,7 +36,6 @@ def upgrade() -> None:
         sa.UniqueConstraint('target_id', 'fingerprint', 'plan_hash', name='uk_plan_unique'),
     )
     op.create_index('idx_plan_fp', 'sql_plan', ['fingerprint'], unique=False)
-
 
 def downgrade() -> None:
     op.drop_index('idx_plan_fp', table_name='sql_plan')
