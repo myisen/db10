@@ -14,6 +14,7 @@ from ..models.models import (
     SqlExecHistory,
     SqlFingerprint,
     SqlJob,
+    SqlPlan,
     SqlPolicy,
     SqlStatSnapshot,
     SqlTarget,
@@ -25,8 +26,12 @@ from ..schemas import (
     ExecHistoryOut,
     ExecIn,
     ExecOut,
+    ExplainIn,
+    ExplainOut,
     JobIn,
     JobOut,
+    PlanDetailOut,
+    PlanItem,
     PolicyIn,
     PolicyOut,
     SqlDetailOut,
@@ -40,6 +45,7 @@ from ..schemas import (
 from ..services.collector import CollectorService
 from ..services.crypto import encrypt
 from ..services.dashboard import dashboard_summary
+from ..services.plan_service import PlanService
 from ..services.executor import ExecutorService
 from ..services.scheduler import register_job, remove_job, run_job_now
 
@@ -401,3 +407,59 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
 @router.post("/jobs/{job_id}/run")
 def run_job(job_id: int):
     return run_job_now(job_id)
+
+
+# ---------------------------------------------------------------------------
+# 执行计划
+# ---------------------------------------------------------------------------
+@router.post("/sql/explain", response_model=ExplainOut)
+def explain_sql(inp: ExplainIn, db: Session = Depends(get_db)):
+    ps = PlanService(db)
+    try:
+        return ps.explain_and_cache(inp.target_id, inp.sql_text, inp.source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/sql/{fingerprint}/plans", response_model=PlanDetailOut)
+def list_plans(fingerprint: str, target_id: Optional[int] = Query(None),
+               db: Session = Depends(get_db)):
+    ps = PlanService(db)
+    rows = ps.list_cached(fingerprint, target_id)
+    items = [PlanItem(
+        plan_id=r["plan_id"],
+        target_id=r["target_id"],
+        fingerprint=r["fingerprint"],
+        plan_hash=r.get("plan_hash"),
+        db_type=r["db_type"],
+        source=r["source"],
+        created_at=r.get("created_at"),
+    ) for r in rows]
+    return PlanDetailOut(plans=items)
+
+
+@router.get("/plans/{plan_id}")
+def plan_detail(plan_id: int, db: Session = Depends(get_db)):
+    p = db.get(SqlPlan, plan_id)
+    if not p:
+        raise HTTPException(404)
+    return {
+        "plan_id": p.id,
+        "target_id": p.target_id,
+        "fingerprint": p.fingerprint,
+        "plan_hash": p.plan_hash,
+        "db_type": p.db_type,
+        "source": p.source,
+        "raw_tree": p.raw_tree or [],
+        "formatted_text": p.formatted_text or "",
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@router.delete("/plans/{plan_id}")
+def delete_plan(plan_id: int, db: Session = Depends(get_db)):
+    ps = PlanService(db)
+    ok = ps.delete(plan_id)
+    if not ok:
+        raise HTTPException(404)
+    return {"ok": True}

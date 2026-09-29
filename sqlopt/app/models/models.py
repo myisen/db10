@@ -159,3 +159,30 @@ class SqlJob(Base):
     last_run_message = Column(Text, nullable=True)
     next_run_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# sql_plan：执行计划缓存
+# ---------------------------------------------------------------------------
+class SqlPlan(Base):
+    __tablename__ = "sql_plan"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    target_id = Column(Integer, ForeignKey("sql_target.id"), nullable=False)
+    fingerprint = Column(
+        String(64), ForeignKey("sql_fingerprint.fingerprint"), nullable=False
+    )
+    plan_hash = Column(String(32), nullable=True)     # Oracle plan_hash_value / OB 不可用则 NULL
+    raw_tree = Column(JSON, nullable=True)              # 原始 plan 行 list[dict]
+    formatted_text = Column(Text, nullable=True)         # 人类可读格式化文本
+    db_type = Column(String(16), nullable=False)        # oracle / oceanbase
+    source = Column(String(16), default="manual")        # manual / cache / explain-on-exec
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "target_id", "fingerprint", "plan_hash",
+            name="uk_plan_unique",
+        ),
+        Index("idx_plan_fp", "fingerprint"),
+    )

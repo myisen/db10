@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
+import time
 
 from ..services.crypto import decrypt
 
@@ -58,6 +59,18 @@ class BaseAdapter(ABC):
     @abstractmethod
     def execute(self, sql: str, timeout_sec: int) -> list[dict]:
         """在线执行（只读）。"""
+
+    @abstractmethod
+    def explain(self, sql: str) -> dict:
+        """拉执行计划。
+
+        返回结构（双端统一）：
+          {
+            "plan_hash": str | None,
+            "raw_tree": [ {...}, ... ],          # 原始计划行（字段由 DB 决定）
+            "formatted_text": str,               # 人类可读的格式化计划文本
+          }
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +329,82 @@ class OracleAdapter(BaseAdapter):
                         conn.rollback()
                     except Exception:
                         pass
+
+    def explain(self, sql: str) -> dict:
+        """EXPLAIN PLAN + DBMS_XPLAN.DISPLAY。"""
+        result: dict = {
+            "plan_hash": None,
+            "raw_tree": [],
+            "formatted_text": "",
+            "db_type": "oracle",
+        }
+        stmt_id = f"sqlopt_{int(time.time() * 1000) % 10000000}"
+
+        with self._connect() as conn:
+            conn.rollback()  # EXPLAIN PLAN 不能在只读事务里
+            with conn.cursor() as cur:
+                # 1) EXPLAIN PLAN
+                try:
+                    cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{stmt_id}' FOR {sql}")
+                except Exception as e:
+                    result["formatted_text"] = f"EXPLAIN PLAN 失败: {e}"
+                    return result
+
+                # 2) 原始树
+                try:
+                    cur.execute(
+                        """
+                        SELECT operation, options, object_name, object_type,
+                               cost, cardinality, bytes, cpu_cost, io_cost,
+                               access_predicates, filter_predicates, projection
+                        FROM plan_table
+                        WHERE statement_id = :sid
+                        ORDER BY id
+                        """,
+                        sid=stmt_id,
+                    )
+                    cols = [d[0].lower() for d in cur.description]
+                    result["raw_tree"] = [dict(zip(cols, r)) for r in cur.fetchall()]
+                except Exception as e:
+                    result["raw_tree"] = [{"error": str(e)}]
+
+                # 3) DBMS_XPLAN.DISPLAY 拉格式化文本
+                try:
+                    cur.execute(
+                        "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY(STATEMENT_ID => :sid))",
+                        sid=stmt_id,
+                    )
+                    lines = [str(r[0]) if r else "" for r in cur.fetchall()]
+                    result["formatted_text"] = "\n".join(lines)
+                except Exception as e:
+                    # 降级：自拼 raw_tree 缩进
+                    indent = 0
+                    out_lines = []
+                    for r in result["raw_tree"]:
+                        op = f"{r.get('operation', '')}{' '+r.get('options','') if r.get('options') else ''}"
+                        obj = r.get("object_name", "") or ""
+                        cost = r.get("cost") or ""
+                        out_lines.append(f"  {op:<25} {obj:<30} cost={cost}")
+                    result["formatted_text"] = "\n".join(out_lines) or f"DBMS_XPLAN 不可用: {e}"
+
+                # 4) 清理 PLAN_TABLE（PLAN_TABLE 是 session 级，不清也行，保险起见）
+                try:
+                    cur.execute("DELETE FROM plan_table WHERE statement_id = :sid", sid=stmt_id)
+                except Exception:
+                    pass
+
+                conn.commit()  # EXPLAIN PLAN 产生的 DML 需要提交
+
+                # 5) 从刚刚的 cursor 执行计划里拿 plan_hash（gv$sql_plan）
+                try:
+                    cur.execute(
+                        "SELECT plan_hash_value FROM gv$sql_plan WHERE statement_id = :sid",
+                        sid=stmt_id,
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        result["plan_hash"] = str(row[0])
+                except Exception:
+                    pass
+
+        return result

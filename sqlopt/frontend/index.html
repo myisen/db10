@@ -17,6 +17,8 @@
     .sql-box { font-family: 'Courier New', monospace; background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 4px; white-space: pre-wrap; max-height: 200px; overflow: auto; font-size: 12px; }
     .sql-box.literal { background: #064e3b; }
     .fingerprint { font-size: 11px; color: #6b7280; font-family: monospace; }
+    .plan-text { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:4px; font-family:'Courier New',monospace; font-size:12px; white-space:pre-wrap; overflow:auto; max-height:400px; margin:4px 0; }
+    .error-box { background:#fef2f2; color:#b91c1c; border:1px solid #fca5a5; padding:10px; border-radius:4px; margin:8px 0; font-size:13px; }
     .row-expander { font-size: 12px; }
   </style>
 </head>
@@ -212,6 +214,54 @@
               <el-table-column prop="cpu_ms" label="CPU ms" width="90" />
               <el-table-column prop="plan_hash" label="Plan Hash" width="100" />
             </el-table>
+
+            <!-- 执行计划折叠面板 -->
+            <el-collapse v-model="plan.active" style="margin-top:16px">
+              <el-collapse-item title="执行计划" name="plan">
+                <div style="margin-bottom:8px">
+                  <el-select v-model="plan.target_id" style="width:180px;margin-right:8px">
+                    <el-option v-for="t in targets" :key="t.id" :label="t.name" :value="t.id" />
+                  </el-select>
+                  <el-button type="primary" :loading="plan.loading" @click="fetchExplain">
+                    拉取/刷新执行计划
+                  </el-button>
+                  <el-button @click="loadCachedPlans">查看历史缓存</el-button>
+                </div>
+                <div v-if="plan.error" class="error-box">{{ plan.error }}</div>
+                <div v-if="plan.current">
+                  <p style="margin:4px 0;color:#888">
+                    plan_id={{ plan.current.plan_id }}
+                    <span v-if="plan.current.plan_hash"> · hash={{ plan.current.plan_hash }}</span>
+                    · {{ plan.current.db_type }} · source={{ plan.current.source }}
+                  </p>
+                  <pre class="plan-text">{{ plan.current.formatted_text }}</pre>
+                  <p style="margin:12px 0 4px;color:#555;font-weight:600">原始 Plan Tree：</p>
+                  <el-table :data="plan.current.raw_tree" border size="small">
+                    <el-table-column v-for="(v, k) in plan.current.raw_tree[0]" :key="k" :prop="k" :label="k" min-width="120">
+                      <template #default="{row}">
+                        <span>{{ row[k] !== undefined && row[k] !== null ? row[k] : '' }}</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+                <div v-if="plan.list.length" style="margin-top:12px">
+                  <p style="margin:4px 0;color:#555;font-weight:600">缓存的历史 Plan：</p>
+                  <el-table :data="plan.list" border size="small">
+                    <el-table-column prop="plan_id" label="ID" width="60" />
+                    <el-table-column prop="plan_hash" label="Hash" width="140" />
+                    <el-table-column prop="db_type" label="DB" width="100" />
+                    <el-table-column prop="source" label="来源" width="100" />
+                    <el-table-column prop="created_at" label="时间" width="170" />
+                    <el-table-column label="操作" width="140">
+                      <template #default="{row}">
+                        <el-button size="small" @click="loadPlanDetail(row.plan_id)">查看</el-button>
+                        <el-button size="small" type="danger" @click="deletePlan(row.plan_id)">删除</el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </el-collapse-item>
+            </el-collapse>
           </div>
         </el-dialog>
       </div>
@@ -252,6 +302,26 @@
             <el-table :data="exec.result.rows" border stripe height="400">
               <el-table-column v-for="(v, k) in exec.result.rows[0]" :key="k" :prop="k" :label="k" />
             </el-table>
+          </div>
+
+          <!-- 在线执行后的执行计划 -->
+          <div style="margin-top:16px" v-if="exec.result">
+            <el-divider />
+            <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px">
+              <b style="font-size:15px">执行计划</b>
+              <el-button size="small" @click="fetchExecExplain" :loading="exec.planLoading">
+                拉取该 SQL 的执行计划
+              </el-button>
+            </div>
+            <div v-if="exec.plan">
+              <p style="margin:4px 0;color:#888;font-size:12px">
+                plan_id={{ exec.plan.plan_id }}
+                <span v-if="exec.plan.plan_hash"> · hash={{ exec.plan.plan_hash }}</span>
+                · {{ exec.plan.db_type }}
+              </p>
+              <pre class="plan-text" style="max-height:300px">{{ exec.plan.formatted_text }}</pre>
+            </div>
+            <div v-if="exec.planError" class="error-box">{{ exec.planError }}</div>
           </div>
         </el-card>
       </div>
@@ -522,7 +592,10 @@ const app = createApp({
     const showSqlDetail = ref(false);
     const sqlDetail = ref(null);
 
-    const exec = reactive({target_id:null, sql_text:'', result:null, loading:false});
+    const exec = reactive({target_id:null, sql_text:'', result:null, loading:false, plan:null, planLoading:false, planError:null});
+
+    // --- execution plan ---
+    const plan = reactive({active:['plan'], target_id:null, loading:false, error:null, current:null, list:[]});
 
     const policies = ref([]);
     const showAddPolicy = ref(false);
@@ -621,6 +694,10 @@ const app = createApp({
     }
     async function expandSql(row) {
       sqlDetail.value = await API('/sql/' + row.fingerprint + (history.target_id ? '?target_id='+history.target_id : ''));
+      // 初始化 plan 面板
+      plan.target_id = history.target_id || targets.value?.[0]?.id || null;
+      plan.active = ['plan'];
+      plan.error = null; plan.current = null; plan.list = [];
       showSqlDetail.value = true;
     }
 
@@ -628,10 +705,62 @@ const app = createApp({
     async function doExec() {
       exec.loading = true;
       exec.result = null;
+      exec.plan = null; exec.planError = null;
       try {
         exec.result = await API('/exec', { method:'POST', body:{target_id:exec.target_id, sql_text:exec.sql_text} });
         await loadExecHistory();
       } finally { exec.loading = false; }
+    }
+
+    // --- execution plan ---
+    async function fetchExplain() {
+      if (!plan.target_id) { plan.error = '请先选择目标'; return; }
+      plan.loading = true; plan.error = null;
+      try {
+        const sql = (sqlDetail.value?.literal_sql && sqlDetail.value.literal_available)
+                  ? sqlDetail.value.literal_sql
+                  : sqlDetail.value.canonical_sql;
+        plan.current = await API('/sql/explain', {
+          method:'POST',
+          body:{ target_id: plan.target_id, sql_text: sql, source:'sql-detail' },
+        });
+        // 同步刷新 list
+        await loadCachedPlans();
+      } catch(e) { plan.error = e.message || String(e); }
+      finally { plan.loading = false; }
+    }
+
+    async function loadCachedPlans() {
+      if (!sqlDetail.value?.fingerprint) return;
+      try {
+        const r = await API('/sql/' + sqlDetail.value.fingerprint + '/plans' + (plan.target_id ? '?target_id='+plan.target_id : ''));
+        plan.list = r.plans || [];
+      } catch(e) { /* ignore */ }
+    }
+
+    async function loadPlanDetail(pid) {
+      try {
+        plan.current = await API('/plans/' + pid);
+      } catch(e) { plan.error = e.message || String(e); }
+    }
+
+    async function deletePlan(pid) {
+      if (!confirm('确认删除该执行计划？')) return;
+      await API('/plans/' + pid, { method:'DELETE' });
+      await loadCachedPlans();
+      if (plan.current?.plan_id === pid) plan.current = null;
+    }
+
+    async function fetchExecExplain() {
+      if (!exec.target_id) { exec.planError = '请先选择目标'; return; }
+      exec.planLoading = true; exec.planError = null;
+      try {
+        exec.plan = await API('/sql/explain', {
+          method:'POST',
+          body:{ target_id: exec.target_id, sql_text: exec.sql_text, source:'online-exec' },
+        });
+      } catch(e) { exec.planError = e.message || String(e); }
+      finally { exec.planLoading = false; }
     }
 
     // --- policies ---
@@ -671,6 +800,7 @@ const app = createApp({
       collect, collectOne, doCollect, doCollectOne,
       history, showSqlDetail, sqlDetail, queryHistory, resetHistory, expandSql,
       exec, doExec,
+      plan, fetchExplain, loadCachedPlans, loadPlanDetail, deletePlan, fetchExecExplain,
       policies, newPolicy, showAddPolicy, addPolicy, delPolicy,
       execHistory,
       dashboard, loadDashboard,

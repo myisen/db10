@@ -171,3 +171,34 @@ class DashboardOut(BaseModel):
     top_slow_sql: list[dict[str, Any]]
     stmt_type_distribution: list[dict[str, Any]]
     since_hours: int
+
+
+# --- 执行计划 ---
+class ExplainIn(BaseModel):
+    target_id: int
+    sql_text: str
+    source: str = "manual"
+
+
+class PlanItem(BaseModel):
+    plan_id: int
+    target_id: int
+    fingerprint: str
+    plan_hash: str | None = None
+    db_type: str
+    source: str
+    created_at: datetime | None = None
+
+
+class ExplainOut(BaseModel):
+    fingerprint: str
+    plan_id: int
+    plan_hash: str | None = None
+    db_type: str
+    raw_tree: list[dict[str, Any]] = []
+    formatted_text: str = ""
+    cached: bool = False
+
+
+class PlanDetailOut(BaseModel):
+    plans: list[PlanItem]

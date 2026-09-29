@@ -139,6 +139,45 @@ class OceanBaseAdapter(BaseAdapter):
             finally:
                 conn.rollback()
 
+    def explain(self, sql: str) -> dict:
+        """OB EXPLAIN（MySQL 协议），返回原始表 + 自拼文本。"""
+        result: dict = {
+            "plan_hash": None,
+            "raw_tree": [],
+            "formatted_text": "",
+            "db_type": "oceanbase",
+        }
+
+        with self._connect() as conn:
+            try:
+                with conn.cursor() as cur:
+                    try:
+                        cur.execute(f"EXPLAIN {sql}")
+                    except Exception as e:
+                        result["formatted_text"] = f"EXPLAIN 失败: {e}"
+                        return result
+
+                    cols = [d[0].lower() for d in cur.description] if cur.description else []
+                    rows = cur.fetchall()
+                    result["raw_tree"] = [dict(zip(cols, r)) for r in rows]
+
+                    # 自拼格式化文本
+                    lines = []
+                    col_widths = {c: max(len(str(r.get(c, "") or "")) for r in result["raw_tree"]) for c in cols}
+                    lines.append(" | ".join(c.ljust(col_widths[c]) for c in cols))
+                    lines.append("-+-".join("-" * col_widths[c] for c in cols))
+                    for r in result["raw_tree"]:
+                        lines.append(" | ".join(
+                            str(r.get(c, "") or "").ljust(col_widths[c]) for c in cols
+                        ))
+                    result["formatted_text"] = "\n".join(lines)
+
+                    # plan_hash 从 OB 的 explain output 里拿可能不可靠，留 None
+            except Exception as e:
+                result["formatted_text"] = f"explain error: {e}"
+
+        return result
+
     @staticmethod
     def _parse_params(params: Any) -> list[dict[str, Any]] | None:
         """把 OB 的 parameters_json 解析成 normalizer 需要的格式。
