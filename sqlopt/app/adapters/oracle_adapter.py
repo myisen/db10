@@ -112,6 +112,166 @@ class OracleAdapter(BaseAdapter):
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
 
+    # ------------------------------------------------------------------
+    # 诊断：版本 + 架构 + 完整权限矩阵（给 DBA 看）
+    # ------------------------------------------------------------------
+    def diagnose(self) -> dict:
+        """一次性探测 Oracle 连接、版本、架构、必需权限。
+
+        返回 dict：
+          {
+            "connect": {"ok": bool, "error": str},
+            "version": "...",
+            "cdb": bool,           # 是否多租户
+            "pdb_name": str | None,
+            "current_schema": str,
+            "has_awr_bind_capture": bool,
+            "checks": [ {"name", "ok", "detail", "grant_sql"}, ... ]
+          }
+        """
+        out: dict = {
+            "connect": {"ok": False, "error": ""},
+            "version": None,
+            "cdb": False,
+            "pdb_name": None,
+            "current_schema": None,
+            "has_awr_bind_capture": False,
+            "checks": [],
+        }
+        # 必需清单：(检查名, 测试 SQL, 缺失时 DBA 应该 GRANT 什么)
+        CHECKS = [
+            # --- 基础 ---
+            ("CREATE SESSION", None, "已经能连上说明有 CREATE SESSION"),
+            ("SELECT_CATALOG_ROLE",
+             "SELECT COUNT(*) FROM all_tables WHERE rownum<=1",
+             "GRANT SELECT_CATALOG_ROLE TO {user} CONTAINER=ALL"),
+            # --- AWR 历史 ---
+            ("AWR: DBA_HIST_SNAPSHOT",
+             "SELECT COUNT(*) FROM dba_hist_snapshot WHERE rownum<=1",
+             "GRANT SELECT ON SYS.DBA_HIST_SNAPSHOT TO {user} CONTAINER=ALL"),
+            ("AWR: DBA_HIST_SQLTEXT",
+             "SELECT COUNT(*) FROM dba_hist_sqltext WHERE rownum<=1",
+             "GRANT SELECT ON SYS.DBA_HIST_SQLTEXT TO {user} CONTAINER=ALL"),
+            ("AWR: DBA_HIST_SQLSTAT",
+             "SELECT COUNT(*) FROM dba_hist_sqlstat WHERE rownum<=1",
+             "GRANT SELECT ON SYS.DBA_HIST_SQLSTAT TO {user} CONTAINER=ALL"),
+            ("AWR: DBA_HIST_SQLBIND",
+             "SELECT COUNT(*) FROM dba_hist_sqlbind WHERE rownum<=1",
+             "GRANT SELECT ON SYS.DBA_HIST_SQLBIND TO {user} CONTAINER=ALL"),
+            ("AWR: DBA_HIST_SQL_BIND_METADATA",
+             "SELECT COUNT(*) FROM dba_hist_sql_bind_metadata WHERE rownum<=1",
+             "GRANT SELECT ON SYS.DBA_HIST_SQL_BIND_METADATA TO {user} CONTAINER=ALL"),
+            # --- 实时 Cursor ---
+            ("Live: GV_$SQL",
+             "SELECT COUNT(*) FROM gv$sql WHERE rownum<=1",
+             "GRANT SELECT ON SYS.GV_$SQL TO {user} CONTAINER=ALL"),
+            ("Live: GV_$SQLTEXT_WITH_NEWLINES",
+             "SELECT COUNT(*) FROM gv$sqltext_with_newlines WHERE rownum<=1",
+             "GRANT SELECT ON SYS.GV_$SQLTEXT_WITH_NEWLINES TO {user} CONTAINER=ALL"),
+            ("Live: GV_$SQL_BIND_CAPTURE",
+             "SELECT COUNT(*) FROM gv$sql_bind_capture WHERE rownum<=1",
+             "GRANT SELECT ON SYS.GV_$SQL_BIND_CAPTURE TO {user} CONTAINER=ALL"),
+            ("Live: GV_$PDBS",
+             "SELECT COUNT(*) FROM gv$pdbs WHERE rownum<=1",
+             "GRANT SELECT ON SYS.GV_$PDBS TO {user} CONTAINER=ALL"),
+            # --- 在线执行 ---
+            ("Exec: SELECT ANY TABLE",
+             "SELECT ANY_TABLE FROM DUAL",  # 占位，见下方
+             "GRANT SELECT ANY TABLE TO {user} CONTAINER=ALL"),
+            ("Exec: EXECUTE DBMS_SQL",
+             "BEGIN EXECUTE IMMEDIATE 'SELECT 1 FROM DUAL'; END;",
+             "GRANT EXECUTE ON DBMS_SQL TO {user} CONTAINER=ALL"),
+            # --- ★ 执行计划 ---
+            ("★ Plan: EXECUTE DBMS_XPLAN",
+             "SELECT DBMS_XPLAN.FORMAT_PLAN(SYSDATE,'BASIC') FROM DUAL",  # 近似测试
+             "GRANT EXECUTE ON DBMS_XPLAN TO {user} CONTAINER=ALL"),
+            ("★ Plan: SELECT PLAN_TABLE$",
+             "SELECT COUNT(*) FROM sys.plan_table$ WHERE rownum<=1",
+             "GRANT SELECT ON SYS.PLAN_TABLE$ TO {user} CONTAINER=ALL"),
+            ("★ Plan: GV_$SQL_PLAN",
+             "SELECT COUNT(*) FROM gv$sql_plan WHERE rownum<=1",
+             "GRANT SELECT ON SYS.GV_$SQL_PLAN TO {user} CONTAINER=ALL"),
+            ("★ Plan: CREATE TABLE (PLAN_TABLE auto)",
+             "CREATE TABLE sqlopt_plan_tbl_check (id NUMBER)",
+             "GRANT CREATE TABLE TO {user} CONTAINER=ALL"),
+        ]
+
+        try:
+            with self._connect() as conn:
+                out["connect"]["ok"] = True
+                with conn.cursor() as cur:
+                    # 版本
+                    try:
+                        cur.execute("SELECT BANNER FROM GV_$VERSION WHERE rownum<=1")
+                        out["version"] = cur.fetchone()[0]
+                    except Exception:
+                        try:
+                            cur.execute("SELECT PRODUCT || ' ' || VERSION FROM PRODUCT_COMPONENT_VERSION WHERE rownum<=1")
+                            out["version"] = cur.fetchone()[0]
+                        except Exception as e:
+                            out["version"] = f"(unknown: {e})"
+
+                    # CDB 判断
+                    try:
+                        cur.execute("SELECT CDB FROM V$DATABASE")
+                        out["cdb"] = cur.fetchone()[0] == "YES"
+                    except Exception:
+                        out["cdb"] = False
+
+                    # 当前 schema
+                    try:
+                        cur.execute("SELECT SYS_CONTEXT('USERENV','SESSION_USER') FROM DUAL")
+                        out["current_schema"] = cur.fetchone()[0]
+                    except Exception:
+                        out["current_schema"] = self.username
+
+                    # PDB 名
+                    try:
+                        cur.execute("SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM DUAL")
+                        pdb = cur.fetchone()[0]
+                        out["pdb_name"] = pdb if pdb != "CDB$ROOT" else None
+                    except Exception:
+                        pass
+
+                    # awr_bind_capture
+                    try:
+                        cur.execute("SELECT VALUE FROM GV_$PARAMETER WHERE NAME='awr_bind_capture' AND rownum<=1")
+                        v = cur.fetchone()
+                        out["has_awr_bind_capture"] = (v is not None and v[0] == "ALL")
+                    except Exception:
+                        out["has_awr_bind_capture"] = False
+
+                    # 逐项权限探测
+                    for name, sql, grant_sql in CHECKS:
+                        grant_sql = grant_sql.replace("{user}", self.username)
+                        if sql is None:
+                            out["checks"].append({"name": name, "ok": True, "detail": "连接成功即代表已授权", "grant_sql": grant_sql})
+                            continue
+                        if name == "Exec: SELECT ANY TABLE":
+                            # 特殊：用 all_tables 存在性替代（SELECT ANY TABLE 不直接测）
+                            sql = "SELECT COUNT(*) FROM all_tables WHERE rownum<=1"
+                        try:
+                            cur.execute(sql)
+                            cur.fetchall()
+                            out["checks"].append({"name": name, "ok": True, "detail": "OK", "grant_sql": grant_sql})
+                        except Exception as e:
+                            out["checks"].append({
+                                "name": name, "ok": False,
+                                "detail": f"{type(e).__name__}: {str(e)[:160]}",
+                                "grant_sql": grant_sql,
+                            })
+                            # 清理可能被 CREATE TABLE 留下的垃圾表
+                            if name == "★ Plan: CREATE TABLE (PLAN_TABLE auto)":
+                                try:
+                                    cur.execute("DROP TABLE sqlopt_plan_tbl_check")
+                                except Exception:
+                                    pass
+        except Exception as e:
+            out["connect"]["ok"] = False
+            out["connect"]["error"] = f"{type(e).__name__}: {e}"
+
+        return out
+
     def collect_history(self, since_days: int = 30) -> Iterable[RawSQLRecord]:
         """拉 AWR 历史。"""
         try:

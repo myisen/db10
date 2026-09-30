@@ -99,6 +99,20 @@ def test_target(target_id: int, db: Session = Depends(get_db)):
     return TestConnOut(ok=ok, message=msg)
 
 
+@router.post("/targets/{target_id}/diagnose")
+def diagnose_target(target_id: int, db: Session = Depends(get_db)):
+    """一次性诊断：版本、架构、完整权限矩阵（给 DBA 看）。"""
+    t = db.get(SqlTarget, target_id)
+    if not t:
+        raise HTTPException(404)
+    adapter = make_adapter(
+        t.db_type, t.conn_url, t.username, t.password_enc, t.extra_conf or {},
+    )
+    if not hasattr(adapter, "diagnose"):
+        raise HTTPException(400, f"{t.db_type} adapter 不支持 diagnose")
+    return adapter.diagnose()
+
+
 # ---------------------------------------------------------------------------
 # 采集
 # ---------------------------------------------------------------------------
