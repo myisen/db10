@@ -1,6 +1,6 @@
-# DBSQL-Tuner —— Oracle SQL 优化平台项目计划
+# DBSQL-Turner —— Oracle SQL 优化平台项目计划
 
-> 项目代号：DBSQL-Tuner
+> 项目代号：DBSQL-Turner
 > 目标数据库：Oracle 10g / 11g / 12c / 19c（兼容老版本，优先保障 10g 场景）
 > 交付形态：Web 平台 + 轻量 Agent（可选）
 > 核心链路：**定位 Top SQL → 拉取对象统计信息 → 执行计划瓶颈分析 → 生成 Hint / 索引 / 改写建议 → 沙箱执行 → 前/后量化对比**
@@ -17,7 +17,7 @@
 - 优化建议（Hint、索引、改写）无法快速验证，"改前改后"缺少统一的、可复现的对比机制；
 - 10g 场景没有 12c 的 `Real-Time SQL Monitoring` 和 `SQL Tuning Set` 的全套能力，需要平台补齐。
 
-**DBSQL-Tuner 的定位**：做 DBA 经验的产品化。它不是另一个 SQL Monitor，而是一把"优化工程化"的锤子——把"发现 → 诊断 → 建议 → 验证 → 对比"串成一条可重复、可审计的流水线。
+**DBSQL-Turner 的定位**：做 DBA 经验的产品化。它不是另一个 SQL Monitor，而是一把"优化工程化"的锤子——把"发现 → 诊断 → 建议 → 验证 → 对比"串成一条可重复、可审计的流水线。
 
 ---
 

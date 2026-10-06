@@ -1,4 +1,4 @@
-# DBSQL-Tuner
+# DBSQL-Turner
 
 > Oracle SQL 优化平台 — M1 基建 MVP。  
 > 核心链路：**定位 Top SQL → 对象画像 → 执行计划 → 规则诊断 → 优化建议 → 沙箱验证 → 前后对比**。
@@ -8,7 +8,7 @@
 ## 目录结构
 
 ```
-dbsql-tuner/
+dbsql-turner/
 ├── backend/                 # FastAPI + SQLAlchemy + oracledb
 │   ├── app/
 │   │   ├── main.py          # FastAPI 入口
@@ -49,7 +49,7 @@ dbsql-tuner/
 ### 后端
 
 ```bash
-cd dbsql-tuner/backend
+cd dbsql-turner/backend
 
 # 1. 建虚拟环境 + 装依赖
 python -m venv .venv && source .venv/bin/activate
@@ -72,7 +72,7 @@ python -m app
 ### 前端
 
 ```bash
-cd dbsql-tuner/frontend
+cd dbsql-turner/frontend
 npm install
 npm run dev
 ```
@@ -121,7 +121,7 @@ docker compose up --build
 ## 数据库迁移
 
 ```bash
-cd dbsql-tuner/backend
+cd dbsql-turner/backend
 alembic upgrade head        # 应用所有迁移
 alembic downgrade -1        # 回滚一个版本
 alembic revision -m "描述"  # 新增一个迁移版本

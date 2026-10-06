@@ -16,7 +16,7 @@ dist/
 *.sqlite
 *.sqlite3
 logs/
-dbsql_tuner.db
+dbsql_turner.db
 
 # IDE / OS
 .DS_Store

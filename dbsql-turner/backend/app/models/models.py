@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the DBSQL-Tuner metadata database."""
+"""SQLAlchemy ORM models for the DBSQL-Turner metadata database."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -26,7 +26,7 @@ def _now() -> datetime:
 
 
 class OracleInstance(Base):
-    """A target Oracle database that DBSQL-Tuner can inspect."""
+    """A target Oracle database that DBSQL-Turner can inspect."""
 
     __tablename__ = "oracle_instances"
 

@@ -19,7 +19,7 @@ export default function App() {
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ background: '#001529', display: 'flex', alignItems: 'center', padding: '0 24px' }}>
         <Title level={4} style={{ color: '#fff', margin: 0, flex: 1 }}>
-          ⚡ DBSQL-Tuner · Oracle SQL 优化平台
+          ⚡ DBSQL-Turner · Oracle SQL 优化平台
         </Title>
       </Header>
       <Layout>

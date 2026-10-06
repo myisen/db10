@@ -21,7 +21,7 @@ def setup_logging(log_dir: str | Path = "logs") -> None:
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
     logger.add(
-        log_path / "dbsql_tuner_{time:YYYY-MM-DD}.log",
+        log_path / "dbsql_turner_{time:YYYY-MM-DD}.log",
         level="DEBUG",
         rotation="00:00",
         retention="30 days",

@@ -8,18 +8,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Runtime settings for DBSQL-Tuner backend."""
+    """Runtime settings for DBSQL-Turner backend."""
 
     # --- App ---
-    app_name: str = "DBSQL-Tuner"
+    app_name: str = "DBSQL-Turner"
     app_version: str = "0.1.0"
     debug: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
 
     # --- Metadata database (PostgreSQL in prod, SQLite in dev) ---
-    # Use sqlite:///./dbsql_tuner.db for development, postgresql+asyncpg://... for prod
-    database_url: str = "sqlite+aiosqlite:///./dbsql_tuner.db"
+    # Use sqlite:///./dbsql_turner.db for development, postgresql+asyncpg://... for prod
+    database_url: str = "sqlite+aiosqlite:///./dbsql_turner.db"
 
     # --- Oracle driver ---
     # Path to Oracle Instant Client library dir (Thick mode).

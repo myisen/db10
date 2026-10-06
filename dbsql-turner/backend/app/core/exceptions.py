@@ -7,7 +7,7 @@ from loguru import logger
 
 
 class TunerError(Exception):
-    """Base for all DBSQL-Tuner errors surfaced to API consumers."""
+    """Base for all DBSQL-Turner errors surfaced to API consumers."""
 
     def __init__(self, message: str, status_code: int = 400, detail: str | None = None):
         super().__init__(message)

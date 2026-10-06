@@ -1,4 +1,4 @@
-# DBSQL-Tuner Backend Requirements
+# DBSQL-Turner Backend Requirements
 # 安装：pip install --only-binary :all: -r requirements.txt
 # （--only-binary 避免 Py3.14 下 pydantic-core / oracledb 等编译失败）
 

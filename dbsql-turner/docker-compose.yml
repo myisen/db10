@@ -7,7 +7,7 @@ services:
       dockerfile: docker/backend.Dockerfile
     container_name: dbsql-backend
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:////app/dbsql_tuner.db
+      - DATABASE_URL=sqlite+aiosqlite:////app/dbsql_turner.db
       - DEBUG=true
       - HOST=0.0.0.0
       - PORT=8000

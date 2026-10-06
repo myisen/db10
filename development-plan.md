@@ -1,4 +1,4 @@
-# DBSQL-Tuner 开发计划（Execution Plan）
+# DBSQL-Turner 开发计划（Execution Plan）
 
 > 基于 [project.md](file:///workspace/project.md) 功能说明制定
 > 文档性质：**可执行的开发任务拆解**，按里程碑逐步推进
